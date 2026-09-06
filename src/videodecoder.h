@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <qobject.h>
 #include <qthread.h>
 #include <qimage.h>
@@ -41,7 +43,13 @@ private:
     bool codecInit(uint32_t codecId, int width, int height);
     void codecRelease();
 
-    bool frameReceive();
+    /**
+     * @brief 处理session元数据包：初始化解码器或在分辨率变化时更新尺寸
+     * @return false表示流处理终止
+     */
+    bool updateVideoSize(uint32_t codecId, uint32_t width, uint32_t height);
+
+    bool frameReceive(const uint8_t* header);
     bool frameMerge();
     void frameUnpack();
 

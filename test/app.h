@@ -20,7 +20,6 @@ private:
 
     ScrcpyServer* scrcpyServer;
     QSize frameSrcSize;
-    QSizeF framePixmapRatio;
 
 private slots:
     void on_btn_connect_clicked();

@@ -1,7 +1,7 @@
 ### qt-scrcpyservice  
 这是一个使用Qt连接[scrcpy-server](https://github.com/Genymobile/scrcpy)的示例程序，运行这个示例需要在CMAKE中定义两个变量：
 - FFMPEG_DIR：ffmpeg库路径
-- SCRCPY_VERSION：scrcpy-server的版本
+- SCRCPY_VERSION：scrcpy-server的版本（当前协议遵循scrcpy 4.x，请使用4.1，例如：-DSCRCPY_VERSION=4.1）
   
 此外，需要准备adb和scrcpy-server程序，例如：
 - 3rdparty/adb/adb.exe

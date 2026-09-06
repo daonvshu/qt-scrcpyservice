@@ -12,10 +12,24 @@ extern "C" {
 
 #define SC_CODEC_ID_H264 UINT32_C(0x68323634) // "h264" in ASCII
 
-#define SC_PACKET_FLAG_CONFIG    (UINT64_C(1) << 63)
-#define SC_PACKET_FLAG_KEY_FRAME (UINT64_C(1) << 62)
+//scrcpy 4.x协议：包头固定12字节
+#define SC_PACKET_HEADER_SIZE 12
+
+#define SC_PACKET_FLAG_SESSION   (UINT64_C(1) << 63)
+#define SC_PACKET_FLAG_CONFIG    (UINT64_C(1) << 62)
+#define SC_PACKET_FLAG_KEY_FRAME (UINT64_C(1) << 61)
 
 #define SC_PACKET_PTS_MASK (SC_PACKET_FLAG_KEY_FRAME - 1)
+
+namespace {
+uint32_t readBE32(const uint8_t* data) {
+    return (uint32_t(data[0]) << 24) | (uint32_t(data[1]) << 16) | (uint32_t(data[2]) << 8) | uint32_t(data[3]);
+}
+
+uint64_t readBE64(const uint8_t* data) {
+    return (uint64_t(readBE32(data)) << 32) | readBE32(data + 4);
+}
+}
 
 VideoDecoder::VideoDecoder(QObject *parent)
     : QThread(parent)
@@ -51,19 +65,31 @@ void VideoDecoder::run() {
         return;
     }
 
-    if (codecCtx == nullptr) {
-        auto codecId = bufferReceiver.receive<uint32_t>();
-        auto width = bufferReceiver.receive<int>();
-        auto height = bufferReceiver.receive<int>();
-        if (!codecInit(codecId, width, height)) {
-            codecRelease();
-            qCritical() << "video decode init failed!";
-            return;
-        }
+    //4.x协议：视频头只有4字节codec id，宽高由后续的session包下发
+    auto codecId = bufferReceiver.receive<uint32_t>();
+    if (bufferReceiver.isEndReceive()) {
+        return;
     }
+
     qInfo() << "video decode is running...";
     for (;;) {
-        if (!frameReceive()) {
+        uint8_t header[SC_PACKET_HEADER_SIZE];
+        bufferReceiver.receive(header, SC_PACKET_HEADER_SIZE);
+        if (bufferReceiver.isEndReceive()) {
+            break;
+        }
+
+        if (header[0] & 0x80) {
+            //session包：流开始或分辨率变化（旋转等）时下发，仅12字节头，无数据负载
+            auto width = readBE32(header + 4);
+            auto height = readBE32(header + 8);
+            if (!updateVideoSize(codecId, width, height)) {
+                break;
+            }
+            continue;
+        }
+
+        if (!frameReceive(header)) {
             break;
         }
         if (!frameMerge()) {
@@ -78,6 +104,35 @@ void VideoDecoder::run() {
     codecRelease();
 
     qInfo() << "video decoder exit...";
+}
+
+bool VideoDecoder::updateVideoSize(uint32_t codecId, uint32_t width, uint32_t height) {
+    if (codecCtx == nullptr) {
+        //首个session包，初始化解码器
+        if (!codecInit(codecId, int(width), int(height))) {
+            qCritical() << "video decode init failed!";
+            return false;
+        }
+        return true;
+    }
+
+    if (codecCtx->width == int(width) && codecCtx->height == int(height)) {
+        return true;
+    }
+
+    //分辨率变化，重建转换上下文
+    codecCtx->width = int(width);
+    codecCtx->height = int(height);
+    sws_freeContext(swsContext);
+    swsContext = sws_getContext(codecCtx->width, codecCtx->height, codecCtx->pix_fmt,
+                                codecCtx->width, codecCtx->height, AV_PIX_FMT_RGB24, SWS_BILINEAR,
+                                nullptr, nullptr, nullptr);
+    if (!swsContext) {
+        emit decoderProcessFailed("sws get context fail!");
+        return false;
+    }
+    qInfo() << "video size changed:" << width << "x" << height;
+    return true;
 }
 
 bool VideoDecoder::codecInit(uint32_t codecId, int width, int height) {
@@ -146,12 +201,9 @@ void VideoDecoder::codecRelease() {
     free(mergeBuffer);
 }
 
-bool VideoDecoder::frameReceive() {
-    auto ptsFlags = bufferReceiver.receive<uint64_t>();
-    auto frameLen = bufferReceiver.receive<int32_t>();
-    if (bufferReceiver.isEndReceive()) {
-        return false;
-    }
+bool VideoDecoder::frameReceive(const uint8_t* header) {
+    auto ptsFlags = readBE64(header);
+    auto frameLen = int32_t(readBE32(header + 8));
     Q_ASSERT(frameLen != 0);
 
     if (av_new_packet(packet, frameLen)) {
